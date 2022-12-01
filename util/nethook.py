@@ -49,7 +49,7 @@ class Trace(contextlib.AbstractContextManager):
 
     def __init__(
         self,
-        module,
+        module, # this is the net when the layer name (`layer`) is given, else it already is the module
         layer=None,
         retain_output=True,
         retain_input=False,

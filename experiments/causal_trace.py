@@ -536,7 +536,7 @@ def plot_hidden_flow(
     plot_trace_heatmap(result, savepdf)
 
 
-def plot_trace_heatmap(result, savepdf=None, title=None, xlabel=None, modelname=None):
+def plot_trace_heatmap(result, savepdf=None, title=None, xlabel=None, modelname=None, direct=False):
     differences = result["scores"]
     low_score = result["low_score"]
     answer = result["answer"]
@@ -564,15 +564,19 @@ def plot_trace_heatmap(result, savepdf=None, title=None, xlabel=None, modelname=
         ax.set_xticks([0.5 + i for i in range(0, differences.shape[1] - 6, 5)])
         ax.set_xticklabels(list(range(0, differences.shape[1] - 6, 5)))
         ax.set_yticklabels(labels)
+
+        action_name = "corrupting" if direct else "restoring"
+        adj_name = "corrupted" if direct else "restored"
+        other_txt = "based on hypothetical corrupted input" if direct else "after corrupted input"
         if not modelname:
             modelname = "GPT"
         if not kind:
-            ax.set_title("Impact of restoring state after corrupted input")
-            ax.set_xlabel(f"single restored layer within {modelname}")
+            ax.set_title(f"Impact of {action_name} state {other_txt}")
+            ax.set_xlabel(f"single {adj_name} layer within {modelname}")
         else:
             kindname = "MLP" if kind == "mlp" else "Attn"
-            ax.set_title(f"Impact of restoring {kindname} after corrupted input")
-            ax.set_xlabel(f"center of interval of {window} restored {kindname} layers")
+            ax.set_title(f"Impact of {action_name} {kindname} {other_txt}")
+            ax.set_xlabel(f"center of interval of {window} {adj_name} {kindname} layers")
         cb = plt.colorbar(h)
         if title is not None:
             ax.set_title(title)
