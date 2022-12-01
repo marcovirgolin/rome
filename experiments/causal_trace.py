@@ -395,7 +395,10 @@ def trace_important_states(
                 uniform_noise=uniform_noise,
                 replace=replace,
             )
-            row.append(r)
+            if str(r.device.startswith("mps")):
+                row.append(r.cpu())
+            else:
+                row.append(r)
         table.append(torch.stack(row))
     return torch.stack(table)
 
@@ -437,7 +440,10 @@ def trace_important_window(
                 uniform_noise=uniform_noise,
                 replace=replace,
             )
-            row.append(r)
+            if str(r.device).startswith("mps"):
+                row.append(r.cpu())
+            else:
+                row.append(r)
         table.append(torch.stack(row))
     return torch.stack(table)
 
@@ -466,7 +472,7 @@ class ModelAndTokenizer:
                 model_name, low_cpu_mem_usage=low_cpu_mem_usage, torch_dtype=torch_dtype
             )
             nethook.set_requires_grad(False, model)
-            model.eval().cuda()
+            model.eval().to("mps")
         self.tokenizer = tokenizer
         self.model = model
         self.layer_names = [
@@ -589,7 +595,7 @@ def plot_all_flow(mt, prompt, subject=None):
 
 
 # Utilities for dealing with tokens
-def make_inputs(tokenizer, prompts, device="cuda"):
+def make_inputs(tokenizer, prompts, device="mps"):
     token_lists = [tokenizer.encode(p) for p in prompts]
     maxlen = max(len(t) for t in token_lists)
     if "[PAD]" in tokenizer.all_special_tokens:
@@ -695,7 +701,7 @@ def get_embedding_cov(mt):
     with torch.no_grad():
         for batch_group in loader:
             for batch in batch_group:
-                batch = dict_to_(batch, "cuda")
+                batch = dict_to_(batch, "mps")
                 del batch["position_ids"]
                 with nethook.Trace(model, layername(mt.model, 0, "embed")) as tr:
                     model(**batch)
