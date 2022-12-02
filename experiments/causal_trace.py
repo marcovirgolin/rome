@@ -552,11 +552,18 @@ def plot_trace_heatmap(result, savepdf=None, title=None, xlabel=None, modelname=
 
     with plt.rc_context(rc={"font.family": "Times New Roman"}):
         fig, ax = plt.subplots(figsize=(3.5, 2), dpi=200)
+        #colormap = {None: "Purples_r" if direct else "Purples", 
+        #        "None": "Purples_r" if direct else "Purples", 
+        #        "mlp": "Greens_r" if direct else "Greens", 
+        #        "attn": "Reds_r" if direct else "Reds"}[
+        #        kind]
+        colormap = {None: "Purples", 
+                "None": "Purples", 
+                "mlp": "Greens", 
+                "attn": "Reds"}[kind]
         h = ax.pcolor(
             differences,
-            cmap={None: "Purples", "None": "Purples", "mlp": "Greens", "attn": "Reds"}[
-                kind
-            ],
+            cmap=colormap,
             vmin=low_score,
         )
         ax.invert_yaxis()
@@ -584,7 +591,10 @@ def plot_trace_heatmap(result, savepdf=None, title=None, xlabel=None, modelname=
             ax.set_xlabel(xlabel)
         elif answer is not None:
             # The following should be cb.ax.set_xlabel, but this is broken in matplotlib 3.5.1.
-            cb.ax.set_title(f"p({str(answer).strip()})", y=-0.16, fontsize=10)
+            if direct:
+                cb.ax.set_title(f"$\Delta$p({str(answer).strip()})", y=-0.16, fontsize=10)
+            else:
+                cb.ax.set_title(f"p({str(answer).strip()})", y=-0.16, fontsize=10)
         if savepdf:
             os.makedirs(os.path.dirname(savepdf), exist_ok=True)
             plt.savefig(savepdf, bbox_inches="tight")
