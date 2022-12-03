@@ -139,7 +139,7 @@ def compute_v(
         )
         weight_decay = hparams.v_weight_decay * (
             torch.norm(delta) / torch.norm(target_init) ** 2
-        )
+        )   # MV: they use weight-decay of 0.5 but do not use it for fine-tuning
         # weight_decay = hparams.v_weight_decay * torch.norm(delta) ** 2
         loss = nll_loss + kl_loss + weight_decay
         print(
@@ -163,7 +163,7 @@ def compute_v(
             with torch.no_grad():
                 delta[...] = delta * max_norm / delta.norm()
 
-    target = target_init + delta
+    target = target_init + delta    # MV: this is v*
 
     # Retrieve cur_input, the current input to the 2nd MLP layer, and
     # cur_output, the original output of the 2nd MLP layer.
@@ -175,10 +175,11 @@ def compute_v(
         word=request["subject"],
         module_template=hparams.rewrite_module_tmp,
         fact_token_strategy=hparams.fact_token,
-    )
+    ) # MV: cur_input is k*-> cur_output is v, i.e., Wk*, which needs to be changed to v*
 
     # Solving the linear system to compute the right vector
-    right_vector = (target - cur_output) / torch.dot(cur_input, left_vector)
+    right_vector = (target - cur_output) / torch.dot(cur_input, left_vector) # MV: left vector is C^(-1)k*
+    # MV: above is (v* - Wk*)/[k*(C^(-1)k*)] i.e. \Lambda
     print(f"Delta norm: {(target - cur_output).norm().item()}")
     print(
         f"Change in target norm: {target_init.norm().item()} to {target.norm().item()} => {(target.norm() - target_init.norm()).item()}"

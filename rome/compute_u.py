@@ -64,7 +64,7 @@ def compute_u(
     context_templates: List[str],
 ) -> torch.Tensor:
     """
-    Computes the right vector used in constructing the rank-1 update matrix.
+    Computes the left vector used in constructing the rank-1 update matrix.
     """
 
     print("Computing left vector (u)...")
@@ -105,8 +105,8 @@ def compute_u(
         raise ValueError(f"fact_token={hparams.fact_token} not recognized")
 
     # Apply inverse second moment adjustment
-    u = cur_repr
-    if hparams.mom2_adjustment:
+    u = cur_repr # MV: this is k^* (the subject, e.g., Steve Jobs)
+    if hparams.mom2_adjustment: # computes C^-1 = (KK^t)^(-1)
         u = get_inv_cov(
             model,
             tok,
@@ -114,7 +114,7 @@ def compute_u(
             hparams.mom2_dataset,
             hparams.mom2_n_samples,
             hparams.mom2_dtype,
-        ) @ u.unsqueeze(1)
+        ) @ u.unsqueeze(1)  # the C^(-1) is multiplied with k^*
         u = u.squeeze()
 
     return u / u.norm()

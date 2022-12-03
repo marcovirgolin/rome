@@ -42,6 +42,8 @@ def apply_rome_to_model(
         with torch.no_grad():
             for w_name, (delta_u, delta_v) in deltas.items():
                 upd_matrix = delta_u.unsqueeze(1) @ delta_v.unsqueeze(0)
+                # MV: upd_matrix is \Lambda (C^(-1)k*)^t, i.e. what is missing from W to become What
+                # delta_u is C^-1k*, delta_v is \Lambda
                 w = nethook.get_parameter(model, w_name)
                 upd_matrix = upd_matrix_match_shape(upd_matrix, w.shape)
 
@@ -49,7 +51,7 @@ def apply_rome_to_model(
                     assert i == 0
                     weights_copy[w_name] = w.detach().clone()
 
-                w[...] += upd_matrix
+                w[...] += upd_matrix # MV: applying the update
 
         print(f"New weights successfully inserted into {list(deltas.keys())}")
 
@@ -89,7 +91,9 @@ def execute_rome(
 
     # Update loop: sequentially intervene at each specified layer
     deltas = {}
-    for layer in sorted(hparams.layers):
+
+    # MV: note this is sorted so that next updates account for previous ones
+    for layer in sorted(hparams.layers):    # MV: done on one layer for ROME (e.g., 17 for gpt2-xl)
         # Compute rank-1 update matrix
         left_vector: torch.Tensor = compute_u(
             model,
@@ -98,7 +102,7 @@ def execute_rome(
             hparams,
             layer,
             get_context_templates(model, tok, hparams.context_template_length_params),
-        )
+        )   # computes C^(-1)k* using Wikipedia for C=KKt and subject for k*
         print("Left vector shape:", left_vector.shape)
         right_vector: torch.Tensor = compute_v(
             model,
@@ -108,17 +112,20 @@ def execute_rome(
             layer,
             left_vector,
             get_context_templates(model, tok, hparams.context_template_length_params),
-        )
+        ) # computes \Lambda = (v* - Wk*)/[(C^(-1)k*)^tk*]
         print("Right vector shape:", right_vector.shape)
 
         with torch.no_grad():
             # Determine correct transposition of delta matrix
+            # MV: delta matrix is \Lambda (C^(-1)k^*)^t, i.e. what is missing from W to become What
             weight_name = f"{hparams.rewrite_module_tmp.format(layer)}.weight"
             upd_matrix = left_vector.unsqueeze(1) @ right_vector.unsqueeze(0)
             upd_matrix = upd_matrix_match_shape(upd_matrix, weights[weight_name].shape)
 
             # Update model weights and record desired changes in `delta` variable
             weights[weight_name][...] += upd_matrix
+            # MV: the update just made will be reverted below. The point is to account for it
+            # for the next iteration of the for loop upon the layers to update
             deltas[weight_name] = (
                 left_vector.detach(),
                 right_vector.detach(),
@@ -127,7 +134,7 @@ def execute_rome(
     # Restore state of original model
     with torch.no_grad():
         for k, v in weights.items():
-            v[...] = weights_copy[k]
+            v[...] = weights_copy[k]    # MV: see comment above about reverting
 
     print(f"Deltas successfully computed for {list(weights.keys())}")
 
