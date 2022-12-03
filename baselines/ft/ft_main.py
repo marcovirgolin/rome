@@ -7,6 +7,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from util import nethook
 
 from .ft_hparams import FTHyperParams
+from rome.compute_v import find_fact_lookup_idx
+from rome.rome_main import get_context_templates
 
 
 def apply_ft_to_model(
@@ -91,6 +93,49 @@ def execute_ft(
     for name, w in model.named_parameters():
         w.requires_grad = name in weights
 
+
+    ### MV: adding KL stuff
+    # Compile list of rewriting and KL x/y pairs
+    # Tokenize target into list of int token IDs
+    target_ids = tok(request["target_new"]["str"], return_tensors="pt").to("cuda")[
+        "input_ids"
+    ][0]
+    ctlp =  [[5, 10], [10, 10]]
+    if hasattr(hparams, "context_template_length_params"):
+        ctlp = hparams.context_template_length_params
+    context_templates = get_context_templates(model, tok, ctlp)
+    rewriting_prompts, kl_prompts = [
+        context.format(request["prompt"]) + tok.decode(target_ids[:-1])
+        for context in context_templates
+    ], ["{} is a"]
+    all_prompts = rewriting_prompts + kl_prompts
+
+    input_tok = tok(
+        [prompt.format(request["subject"]) for prompt in all_prompts],
+        return_tensors="pt",
+        padding=True,
+    ).to("cuda")
+
+    # Compute rewriting targets
+    rewriting_targets = torch.tensor(-100, device="cuda").repeat(
+        len(rewriting_prompts), *input_tok["input_ids"].shape[1:]
+    )
+    for i in range(len(rewriting_prompts)):
+        ex_len = input_tok["attention_mask"][i].sum()
+        rewriting_targets[i, ex_len - len(target_ids) : ex_len] = target_ids
+
+    # Compute indices of the tokens where the fact is looked up
+    fact_token = hparams.fact_token if hasattr(hparams, "fact_token") else "subject_last"
+    lookup_idxs = [
+        find_fact_lookup_idx(
+            prompt, request["subject"], tok, fact_token, verbose=(i == 0)
+        )
+        for i, prompt in enumerate(all_prompts)
+    ]
+    kl_distr_init = None
+    ### MV: end KL stuff
+
+
     # Update loop: intervene at layers simultaneously
     loss_meter = AverageMeter()
     for it in range(hparams.num_steps):
@@ -110,13 +155,51 @@ def execute_ft(
             loss_mask = target_ids != tok.unk_token_id
 
             opt.zero_grad()
+
+            # Forward propagation
+
+            ### MV: Start adding material for KL
+            logits = model(**input_tok).logits
+            # Compute distribution for KL divergence
+            kl_logits = torch.stack(
+                [
+                    logits[i - len(kl_prompts), idx, :]
+                    for i, idx in enumerate(lookup_idxs[-len(kl_prompts) :])
+                ],
+                dim=0,
+            )
+            kl_log_probs = torch.nn.functional.log_softmax(kl_logits, dim=1)
+            if kl_distr_init is None:
+                kl_distr_init = kl_log_probs.detach().clone()
+            ### MV: END adding material for KL
+
+
             bs = inputs["input_ids"].shape[0]
-            probs = torch.nn.functional.log_softmax(
+            log_probs = torch.nn.functional.log_softmax(
                 model(**inputs).logits[torch.arange(bs), last_token_inds], dim=-1
             )
-            loss = -(torch.gather(probs, 1, target_ids) * loss_mask).sum(
+            nll_loss = -(torch.gather(log_probs, 1, target_ids) * loss_mask).sum(
                 1
             ) / loss_mask.sum(1)
+
+          
+            ### MV: adding regularizations used in ROME but not in FT
+            kl_loss = 0.0
+            if hparams.kl_factor:
+                kl_loss = hparams.kl_factor * torch.nn.functional.kl_div(
+                    kl_distr_init, kl_log_probs, log_target=True, reduction="batchmean"
+                )
+            loss_weight_decay = 0.0
+            # MV: compute delta
+            for k in weights:
+                delta = weights[k] - weights_copy[k]
+                loss_weight_decay += delta / torch.norm(weights_copy[k]) ** 2
+            deltas = {k: (weights[k] - weights_copy[k]).detach() for k in weights}
+
+            loss = nll_loss + kl_loss + loss_weight_decay
+
+            ### MV: end edit
+
             loss = loss.mean()
             print(f"Batch loss {loss.item()}")
             loss_meter.update(loss.item(), n=bs)
@@ -135,8 +218,8 @@ def execute_ft(
 
         print(f"Total loss {loss_meter.avg}")
 
-        if loss_meter.avg < 1e-2:
-            break
+        #if loss_meter.avg < 1e-2: # MV: ? why
+        #    break
 
     deltas = {k: (weights[k] - weights_copy[k]).detach() for k in weights}
 

@@ -24,16 +24,18 @@ def demo_model_editing(
     for comparison of model behavior. Returns the updated model and the original values of
     weights that were changed.
     """
-
     nethook.set_requires_grad(True, model)
 
     RewritingParamsClass, apply_method, hparams_prefix, hparams_suffix = load_alg(
         alg_name
     )
+    model_name = model.config._name_or_path.replace('/', '_')
+    if model_name == "gpt2":
+        model_name = "gpt2-medium" # use "medium" setting also for gpt2-small
     params_name = (
         HPARAMS_DIR
         / hparams_prefix
-        / f"{model.config._name_or_path.replace('/', '_')}{hparams_suffix}.json"
+        / f"{model_name}{hparams_suffix}.json"
     )
 
     print_loud(f"Retrieving {alg_name} hyperparameters")
@@ -87,6 +89,7 @@ def load_alg(alg_name):
     """
     assert alg_name in [
         "FT",
+        "FT-R",
         "FT-L",
         "FT-AttnEdit",
         "KN",
@@ -103,6 +106,7 @@ def load_alg(alg_name):
     elif "FT" in alg_name:
         d = {
             "FT": (FTHyperParams, apply_ft_to_model, "FT", "_unconstr"),
+            "FT-R": (FTHyperParams, apply_ft_to_model, "FT", "_r"),
             "FT-AttnEdit": (FTHyperParams, apply_ft_to_model, "FT", "_attn"),
             "FT-L": (FTHyperParams, apply_ft_to_model, "FT", "_constr"),
         }

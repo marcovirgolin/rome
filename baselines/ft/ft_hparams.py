@@ -22,5 +22,10 @@ class FTHyperParams(HyperParams):
     ln_f_module: str
     lm_head_module: str
 
+    # MV: added stuff for KL
+    context_template_length_params: List[List[int]]
+
     # Defaults
     batch_size: int = 128
+
+    
