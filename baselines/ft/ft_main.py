@@ -133,6 +133,19 @@ def execute_ft(
         for i, prompt in enumerate(all_prompts)
     ]
     kl_distr_init = None
+    # MV: guess you can theoretically do this only once at the beginning
+    logits = model(**input_tok).logits
+    # Compute distribution for KL divergence 
+    kl_logits = torch.stack(
+        [
+            logits[i - len(kl_prompts), idx, :]
+            for i, idx in enumerate(lookup_idxs[-len(kl_prompts) :])
+        ],
+        dim=0,
+    )
+    kl_log_probs = torch.nn.functional.log_softmax(kl_logits, dim=1)
+    if kl_distr_init is None:
+        kl_distr_init = kl_log_probs.detach().clone()
     ### MV: end KL stuff
 
 
@@ -157,23 +170,6 @@ def execute_ft(
             opt.zero_grad()
 
             # Forward propagation
-
-            ### MV: Start adding material for KL
-            logits = model(**input_tok).logits
-            # Compute distribution for KL divergence
-            kl_logits = torch.stack(
-                [
-                    logits[i - len(kl_prompts), idx, :]
-                    for i, idx in enumerate(lookup_idxs[-len(kl_prompts) :])
-                ],
-                dim=0,
-            )
-            kl_log_probs = torch.nn.functional.log_softmax(kl_logits, dim=1)
-            if kl_distr_init is None:
-                kl_distr_init = kl_log_probs.detach().clone()
-            ### MV: END adding material for KL
-
-
             bs = inputs["input_ids"].shape[0]
             log_probs = torch.nn.functional.log_softmax(
                 model(**inputs).logits[torch.arange(bs), last_token_inds], dim=-1
