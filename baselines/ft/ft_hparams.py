@@ -24,6 +24,7 @@ class FTHyperParams(HyperParams):
 
     # MV: added stuff for KL
     context_template_length_params: List[List[int]]
+    loss_layer : int
 
     # Defaults
     batch_size: int = 128

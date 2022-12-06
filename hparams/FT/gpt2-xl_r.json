@@ -6,7 +6,7 @@
     "lr": 5e-4,
     "weight_decay": 0.5,
     "kl_factor": 0.0625,
-    "loss_layer" : 23,
+    "loss_layer" : 47,
     "fact_token": "subject_last",
     "norm_constraint": false,
     "rewrite_module_tmp": "transformer.h.{}.mlp.c_proj",

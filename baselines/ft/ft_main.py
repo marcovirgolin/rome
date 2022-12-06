@@ -133,19 +133,6 @@ def execute_ft(
         for i, prompt in enumerate(all_prompts)
     ]
     kl_distr_init = None
-    # MV: guess you can theoretically do this only once at the beginning
-    logits = model(**input_tok).logits
-    # Compute distribution for KL divergence 
-    kl_logits = torch.stack(
-        [
-            logits[i - len(kl_prompts), idx, :]
-            for i, idx in enumerate(lookup_idxs[-len(kl_prompts) :])
-        ],
-        dim=0,
-    )
-    kl_log_probs = torch.nn.functional.log_softmax(kl_logits, dim=1)
-    if kl_distr_init is None:
-        kl_distr_init = kl_log_probs.detach().clone()
     ### MV: end KL stuff
 
 
@@ -177,9 +164,33 @@ def execute_ft(
             nll_loss = -(torch.gather(log_probs, 1, target_ids) * loss_mask).sum(
                 1
             ) / loss_mask.sum(1)
-
           
             ### MV: adding regularizations used in ROME but not in FT
+
+            # Compute distribution for KL divergence 
+            # Forward propagation
+            with nethook.TraceDict(
+                module=model,
+                layers=[
+                    hparams.layer_module_tmp.format(hparams.loss_layer),
+                ],
+                retain_input=False,
+                retain_output=True,
+            ) as tr:
+                logits = model(**input_tok).logits
+
+            # Compute distribution for KL divergence
+            kl_logits = torch.stack(
+                [
+                    logits[i - len(kl_prompts), idx, :]
+                    for i, idx in enumerate(lookup_idxs[-len(kl_prompts) :])
+                ],
+                dim=0,
+            )
+            kl_log_probs = torch.nn.functional.log_softmax(kl_logits, dim=1)
+            if kl_distr_init is None:
+                kl_distr_init = kl_log_probs.detach().clone() # MV: will be set the first time, only for the KL prompts
+            
             kl_loss = 0.0
             if hparams.kl_factor:
                 kl_loss = hparams.kl_factor * torch.nn.functional.kl_div(
@@ -191,18 +202,15 @@ def execute_ft(
                 delta = weights[k] - weights_copy[k]
                 loss_weight_decay += delta / torch.norm(weights_copy[k]) ** 2
             deltas = {k: (weights[k] - weights_copy[k]).detach() for k in weights}
-
             loss = nll_loss + kl_loss + loss_weight_decay
-
             ### MV: end edit
 
             loss = loss.mean()
             print(f"Batch loss {loss.item()}")
             loss_meter.update(loss.item(), n=bs)
 
-            if loss.item() >= 1e-2:
-                loss.backward()
-                opt.step()
+            loss.backward()
+            opt.step()
 
             if type(hparams.norm_constraint) is float:
                 eps = hparams.norm_constraint
