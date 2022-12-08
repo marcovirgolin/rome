@@ -70,15 +70,21 @@ def execute_ft(
         )
 
     # Retrieve weights that user desires to change
+    
+    # MV: there's only 1 layer in hparams.layers for FT; prob because they dont weight decay and so it is not really used
+    """
     weights = {
         n: p
         for n, p in model.named_parameters()
         for layer in hparams.layers
         if hparams.rewrite_module_tmp.format(layer) in n
     }
-    # Save old weights for future restoration
+    # MV: weights_copy (aka old_weights) is used to compute weight decay upon the diff (new_weights - old_weights)
     weights_copy = {k: v.detach().clone() for k, v in weights.items()}
     print(f"Weights to be updated: {list(weights.keys())}")
+    """
+    weights = [p for p in model.parameters()]
+    weights_copy = [p.detach.clone() for p in model.parameters()]
 
     # Define inputs
     texts = [r["prompt"].format(r["subject"]) for r in requests]
@@ -97,42 +103,53 @@ def execute_ft(
     ### MV: adding KL stuff
     # Compile list of rewriting and KL x/y pairs
     # Tokenize target into list of int token IDs
-    target_ids = tok(request["target_new"]["str"], return_tensors="pt").to("cuda")[
-        "input_ids"
-    ][0]
-    ctlp =  [[5, 10], [10, 10]]
-    if hasattr(hparams, "context_template_length_params"):
-        ctlp = hparams.context_template_length_params
-    context_templates = get_context_templates(model, tok, ctlp)
-    rewriting_prompts, kl_prompts = [
-        context.format(request["prompt"]) + tok.decode(target_ids[:-1])
-        for context in context_templates
-    ], ["{} is a"]
-    all_prompts = rewriting_prompts + kl_prompts
+    txt_to_info = dict()
+    for i, txt in enumerate(texts):
+        request = requests[i]
+        target_ids = tok(request["target_new"]["str"], return_tensors="pt").to("cuda")[
+            "input_ids"
+        ][0]
+        ctlp =  [[5, 10], [10, 10]]
+        if hasattr(hparams, "context_template_length_params"):
+            ctlp = hparams.context_template_length_params
+        context_templates = get_context_templates(model, tok, ctlp)
+        rewriting_prompts, kl_prompts = [
+            context.format(request["prompt"]) + tok.decode(target_ids[:-1])
+            for context in context_templates
+        ], ["{} is a"]
+        all_prompts = rewriting_prompts + kl_prompts
 
-    input_tok = tok(
-        [prompt.format(request["subject"]) for prompt in all_prompts],
-        return_tensors="pt",
-        padding=True,
-    ).to("cuda")
+        input_tok = tok(
+            [prompt.format(request["subject"]) for prompt in all_prompts],
+            return_tensors="pt",
+            padding=True,
+        ).to("cuda")
 
-    # Compute rewriting targets
-    rewriting_targets = torch.tensor(-100, device="cuda").repeat(
-        len(rewriting_prompts), *input_tok["input_ids"].shape[1:]
-    )
-    for i in range(len(rewriting_prompts)):
-        ex_len = input_tok["attention_mask"][i].sum()
-        rewriting_targets[i, ex_len - len(target_ids) : ex_len] = target_ids
-
-    # Compute indices of the tokens where the fact is looked up
-    fact_token = hparams.fact_token if hasattr(hparams, "fact_token") else "subject_last"
-    lookup_idxs = [
-        find_fact_lookup_idx(
-            prompt, request["subject"], tok, fact_token, verbose=(i == 0)
+        # Compute rewriting targets
+        rewriting_targets = torch.tensor(-100, device="cuda").repeat(
+            len(rewriting_prompts), *input_tok["input_ids"].shape[1:]
         )
-        for i, prompt in enumerate(all_prompts)
-    ]
-    kl_distr_init = None
+        for i in range(len(rewriting_prompts)):
+            ex_len = input_tok["attention_mask"][i].sum()
+            rewriting_targets[i, ex_len - len(target_ids) : ex_len] = target_ids
+
+        # Compute indices of the tokens where the fact is looked up
+        fact_token = hparams.fact_token if hasattr(hparams, "fact_token") else "subject_last"
+        lookup_idxs = [
+            find_fact_lookup_idx(
+                prompt, request["subject"], tok, fact_token, verbose=(i == 0)
+            )
+            for i, prompt in enumerate(all_prompts)
+        ]
+        kl_distr_init = None
+        txt_to_info[txt] = {
+            "kl_distr_init" : kl_distr_init,
+            "kl_prompts" : kl_prompts,
+            "input_tok" : input_tok,
+            "rewriting_targets" : rewriting_targets,
+            "lookup_idxs" : lookup_idxs,
+            "target_ids" : target_ids,
+        }
     ### MV: end KL stuff
 
 
@@ -145,60 +162,44 @@ def execute_ft(
         loss_meter.reset()
 
         for txt, tgt in zip(
-            chunks(texts, hparams.batch_size), chunks(targets, hparams.batch_size)
+            chunks(texts, 1), chunks(targets, 1) # MV: gotta do batch size of 1 for simplicity (anyhow we now submit more than 1 prompt because of the KL ones)
         ):
-            inputs = tok(txt, return_tensors="pt", padding=True).to("cuda")
-            target_ids = tok(tgt, return_tensors="pt", padding=True)["input_ids"].to(
-                "cuda"
-            )
-            last_token_inds = inputs["attention_mask"].sum(dim=1) - 1
-            loss_mask = target_ids != tok.unk_token_id
-
             opt.zero_grad()
 
-            # Forward propagation
-            bs = inputs["input_ids"].shape[0]
-            log_probs = torch.nn.functional.log_softmax(
-                model(**inputs).logits[torch.arange(bs), last_token_inds], dim=-1
-            )
-            nll_loss = -(torch.gather(log_probs, 1, target_ids) * loss_mask).sum(
-                1
-            ) / loss_mask.sum(1)
-          
-            ### MV: adding regularizations used in ROME but not in FT
+            input_tok = txt_to_info[txt]["input_tok"]
+            logits = model(**input_tok).logits
 
-            # Compute distribution for KL divergence 
-            # Forward propagation
-            with nethook.TraceDict(
-                module=model,
-                layers=[
-                    hparams.layer_module_tmp.format(hparams.loss_layer),
-                ],
-                retain_input=False,
-                retain_output=True,
-            ) as tr:
-                logits = model(**input_tok).logits
-
-            # Compute distribution for KL divergence
+            # MV: get KL logits
             kl_logits = torch.stack(
                 [
-                    logits[i - len(kl_prompts), idx, :]
-                    for i, idx in enumerate(lookup_idxs[-len(kl_prompts) :])
+                    logits[i - len(txt_to_info[txt]["kl_prompts"]), idx, :]
+                    for i, idx in enumerate(lookup_idxs[-len(txt_to_info[txt]["kl_prompts"]) :])
                 ],
                 dim=0,
             )
             kl_log_probs = torch.nn.functional.log_softmax(kl_logits, dim=1)
-            if kl_distr_init is None:
-                kl_distr_init = kl_log_probs.detach().clone() # MV: will be set the first time, only for the KL prompts
-            
-            kl_loss = 0.0
-            if hparams.kl_factor:
-                kl_loss = hparams.kl_factor * torch.nn.functional.kl_div(
-                    kl_distr_init, kl_log_probs, log_target=True, reduction="batchmean"
-                )
+            if txt_to_info[txt]["kl_distr_init"] is None:
+                txt_to_info[txt]["kl_distr_init"] = kl_log_probs.detach().clone() # MV: will be set the first time, only for the KL prompts
+
+
+            # Compute loss on rewriting targets
+            log_probs = torch.log_softmax(logits, dim=2)
+
+            loss = torch.gather(
+                log_probs,
+                2,
+                torch.where(txt_to_info[txt]["rewriting_targets"] != -100, txt_to_info[txt]["rewriting_targets"], 0).unsqueeze(2),
+            ).squeeze(2)
+            mask = (txt_to_info[txt]["rewriting_targets"] != -100).float()
+
+            nll_loss_each = -(loss * mask).sum(1) / txt_to_info[txt]["target_ids"].size(0)
+            nll_loss = nll_loss_each.mean()
+            kl_loss = hparams.kl_factor * torch.nn.functional.kl_div(
+                txt_to_info[txt]["kl_distr_init"], kl_log_probs, log_target=True, reduction="batchmean"
+            )
+
             loss_weight_decay = 0.0
-            # MV: compute delta
-            for k in weights:
+            for k, _ in enumerate(weights):
                 delta = weights[k] - weights_copy[k]
                 loss_weight_decay += delta / torch.norm(weights_copy[k]) ** 2
             deltas = {k: (weights[k] - weights_copy[k]).detach() for k in weights}
@@ -207,7 +208,7 @@ def execute_ft(
 
             loss = loss.mean()
             print(f"Batch loss {loss.item()}")
-            loss_meter.update(loss.item(), n=bs)
+            loss_meter.update(loss.item(), n=1)
 
             loss.backward()
             opt.step()

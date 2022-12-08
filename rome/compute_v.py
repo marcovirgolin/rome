@@ -74,7 +74,7 @@ def compute_v(
 
     # Inserts new "delta" variable at the appropriate part of the computation
     def edit_output_fn(cur_out, cur_layer):
-        nonlocal target_init
+        nonlocal target_init # MV: modifies the one out of scope of this function
 
         if cur_layer == hparams.mlp_module_tmp.format(layer):
             # Store initial value of the vector of interest
@@ -119,7 +119,7 @@ def compute_v(
             )
             kl_log_probs = torch.nn.functional.log_softmax(kl_logits, dim=1)
             if kl_distr_init is None:
-                kl_distr_init = kl_log_probs.detach().clone()
+                kl_distr_init = kl_log_probs.detach().clone() # MV: will be set the first time, only for the KL prompts
 
         # Compute loss on rewriting targets
         log_probs = torch.log_softmax(logits, dim=2)
